@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -74,16 +78,120 @@ func (s *AppServer) handleGetLoginQrcode(ctx context.Context) *MCPToolResult {
 		return now.Add(d).Format("2006-01-02 15:04:05")
 	}()
 
-	// 已登录：文本 + 图片
+	mimeType, imageData, err := normalizeQRCodeImage(result.Img)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{Type: "text", Text: "获取登录扫码图片失败: " + err.Error()}},
+			IsError: true,
+		}
+	}
+
+	// 返回文本 + 图片
 	contents := []MCPContent{
 		{Type: "text", Text: "请用小红书 App 在 " + deadline + " 前扫码登录 👇"},
 		{
 			Type:     "image",
-			MimeType: "image/png",
-			Data:     strings.TrimPrefix(result.Img, "data:image/png;base64,"),
+			MimeType: mimeType,
+			Data:     imageData,
 		},
 	}
 	return &MCPToolResult{Content: contents}
+}
+
+func normalizeQRCodeImage(raw string) (string, string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", "", fmt.Errorf("二维码图片数据为空")
+	}
+
+	if strings.HasPrefix(trimmed, "data:") {
+		return parseDataURIImage(trimmed)
+	}
+
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		return fetchRemoteImage(trimmed)
+	}
+
+	imageBytes, err := base64.StdEncoding.DecodeString(trimmed)
+	if err != nil {
+		return "", "", fmt.Errorf("无法解析二维码图片数据: %w", err)
+	}
+
+	return detectImageMime(imageBytes, ""), base64.StdEncoding.EncodeToString(imageBytes), nil
+}
+
+func parseDataURIImage(dataURI string) (string, string, error) {
+	commaIndex := strings.Index(dataURI, ",")
+	if commaIndex <= len("data:") {
+		return "", "", fmt.Errorf("二维码 data URI 格式不合法")
+	}
+
+	meta := dataURI[len("data:"):commaIndex]
+	payload := dataURI[commaIndex+1:]
+
+	var mimeType string
+	isBase64 := false
+	for i, part := range strings.Split(meta, ";") {
+		part = strings.TrimSpace(part)
+		if i == 0 && part != "" {
+			mimeType = part
+			continue
+		}
+		if strings.EqualFold(part, "base64") {
+			isBase64 = true
+		}
+	}
+
+	if isBase64 {
+		imageBytes, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			return "", "", fmt.Errorf("二维码 base64 解码失败: %w", err)
+		}
+		return detectImageMime(imageBytes, mimeType), base64.StdEncoding.EncodeToString(imageBytes), nil
+	}
+
+	unescaped, err := url.QueryUnescape(payload)
+	if err != nil {
+		return "", "", fmt.Errorf("二维码 data URI 解析失败: %w", err)
+	}
+	imageBytes := []byte(unescaped)
+	return detectImageMime(imageBytes, mimeType), base64.StdEncoding.EncodeToString(imageBytes), nil
+}
+
+func fetchRemoteImage(imageURL string) (string, string, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(imageURL)
+	if err != nil {
+		return "", "", fmt.Errorf("下载二维码图片失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("下载二维码图片失败: HTTP %d", resp.StatusCode)
+	}
+
+	imageBytes, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
+	if err != nil {
+		return "", "", fmt.Errorf("读取二维码图片失败: %w", err)
+	}
+	if len(imageBytes) == 0 {
+		return "", "", fmt.Errorf("二维码图片为空")
+	}
+
+	headerMime := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
+	mimeType := detectImageMime(imageBytes, headerMime)
+	return mimeType, base64.StdEncoding.EncodeToString(imageBytes), nil
+}
+
+func detectImageMime(imageBytes []byte, fallback string) string {
+	detected := http.DetectContentType(imageBytes)
+	if strings.HasPrefix(detected, "image/") {
+		return detected
+	}
+	if strings.HasPrefix(fallback, "image/") {
+		return fallback
+	}
+	return "image/png"
 }
 
 // handleDeleteCookies 处理删除 cookies 请求，用于登录重置
