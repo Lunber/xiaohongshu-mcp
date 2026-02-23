@@ -394,21 +394,38 @@ func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID
 	page := b.NewPage()
 	defer page.Close()
 
-	// 创建 Feed 详情 action
 	action := xiaohongshu.NewFeedDetailAction(page)
 
-	// 获取 Feed 详情
 	result, err := action.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAllComments, config)
 	if err != nil {
 		return nil, err
 	}
 
-	response := &FeedDetailResponse{
+	return &FeedDetailResponse{
 		FeedID: feedID,
 		Data:   result,
+	}, nil
+}
+
+// GetFeedDetailByURL 通过 URL 获取Feed详情
+func (s *XiaohongshuService) GetFeedDetailByURL(ctx context.Context, rawURL string, loadAllComments bool, config xiaohongshu.CommentLoadConfig) (*FeedDetailResponse, error) {
+	b := newBrowser()
+	defer b.Close()
+
+	page := b.NewPage()
+	defer page.Close()
+
+	action := xiaohongshu.NewFeedDetailAction(page)
+
+	result, err := action.GetFeedDetailByURL(ctx, rawURL, loadAllComments, config)
+	if err != nil {
+		return nil, err
 	}
 
-	return response, nil
+	return &FeedDetailResponse{
+		FeedID: result.Note.NoteID,
+		Data:   result,
+	}, nil
 }
 
 // UserProfile 获取用户信息

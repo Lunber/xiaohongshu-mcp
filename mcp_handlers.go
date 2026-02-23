@@ -324,23 +324,16 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 	logrus.Info("MCP: 获取Feed详情")
 
 	// 解析参数
-	feedID, ok := args["feed_id"].(string)
-	if !ok || feedID == "" {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "获取Feed详情失败: 缺少feed_id参数",
-			}},
-			IsError: true,
-		}
-	}
+	noteURL, _ := args["url"].(string)
+	feedID, _ := args["feed_id"].(string)
+	xsecToken, _ := args["xsec_token"].(string)
 
-	xsecToken, ok := args["xsec_token"].(string)
-	if !ok || xsecToken == "" {
+	// url 和 feed_id 至少提供一个
+	if noteURL == "" && feedID == "" {
 		return &MCPToolResult{
 			Content: []MCPContent{{
 				Type: "text",
-				Text: "获取Feed详情失败: 缺少xsec_token参数",
+				Text: "获取Feed详情失败: 请提供 url 或 feed_id 参数",
 			}},
 			IsError: true,
 		}
@@ -360,7 +353,6 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 		}
 	}
 
-	// 解析评论配置参数，如果未提供则使用默认值
 	config := xiaohongshu.DefaultCommentLoadConfig()
 
 	if raw, ok := args["click_more_replies"]; ok {
@@ -404,9 +396,26 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 		config.ScrollSpeed = raw
 	}
 
-	logrus.Infof("MCP: 获取Feed详情 - Feed ID: %s, loadAllComments=%v, config=%+v", feedID, loadAll, config)
+	var result *FeedDetailResponse
+	var err error
 
-	result, err := s.xiaohongshuService.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAll, config)
+	if noteURL != "" {
+		logrus.Infof("MCP: 通过 URL 获取Feed详情 - URL: %s, loadAllComments=%v", noteURL, loadAll)
+		result, err = s.xiaohongshuService.GetFeedDetailByURL(ctx, noteURL, loadAll, config)
+	} else {
+		if xsecToken == "" {
+			return &MCPToolResult{
+				Content: []MCPContent{{
+					Type: "text",
+					Text: "获取Feed详情失败: 使用 feed_id 时必须同时提供 xsec_token",
+				}},
+				IsError: true,
+			}
+		}
+		logrus.Infof("MCP: 获取Feed详情 - Feed ID: %s, loadAllComments=%v, config=%+v", feedID, loadAll, config)
+		result, err = s.xiaohongshuService.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAll, config)
+	}
+
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -417,7 +426,6 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 		}
 	}
 
-	// 格式化输出，转换为JSON字符串
 	jsonData, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return &MCPToolResult{

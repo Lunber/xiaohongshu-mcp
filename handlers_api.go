@@ -181,21 +181,34 @@ func (s *AppServer) getFeedDetailHandler(c *gin.Context) {
 		return
 	}
 
-	var result *FeedDetailResponse
-	var err error
+	if req.URL == "" && req.FeedID == "" {
+		respondError(c, http.StatusBadRequest, "INVALID_REQUEST",
+			"请提供 url 或 feed_id 参数", nil)
+		return
+	}
 
+	config := xiaohongshu.DefaultCommentLoadConfig()
 	if req.CommentConfig != nil {
-		// 使用配置参数
-		config := xiaohongshu.CommentLoadConfig{
+		config = xiaohongshu.CommentLoadConfig{
 			ClickMoreReplies:    req.CommentConfig.ClickMoreReplies,
 			MaxRepliesThreshold: req.CommentConfig.MaxRepliesThreshold,
 			MaxCommentItems:     req.CommentConfig.MaxCommentItems,
 			ScrollSpeed:         req.CommentConfig.ScrollSpeed,
 		}
-		result, err = s.xiaohongshuService.GetFeedDetailWithConfig(c.Request.Context(), req.FeedID, req.XsecToken, req.LoadAllComments, config)
+	}
+
+	var result *FeedDetailResponse
+	var err error
+
+	if req.URL != "" {
+		result, err = s.xiaohongshuService.GetFeedDetailByURL(c.Request.Context(), req.URL, req.LoadAllComments, config)
 	} else {
-		// 使用默认配置
-		result, err = s.xiaohongshuService.GetFeedDetail(c.Request.Context(), req.FeedID, req.XsecToken, req.LoadAllComments)
+		if req.XsecToken == "" {
+			respondError(c, http.StatusBadRequest, "INVALID_REQUEST",
+				"使用 feed_id 时必须同时提供 xsec_token", nil)
+			return
+		}
+		result, err = s.xiaohongshuService.GetFeedDetailWithConfig(c.Request.Context(), req.FeedID, req.XsecToken, req.LoadAllComments, config)
 	}
 
 	if err != nil {

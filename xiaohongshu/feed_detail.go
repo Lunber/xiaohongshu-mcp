@@ -117,6 +117,57 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	return f.extractFeedDetail(page, feedID)
 }
 
+// GetFeedDetailByURL 通过任意小红书链接获取笔记详情
+func (f *FeedDetailAction) GetFeedDetailByURL(ctx context.Context, rawURL string, loadAllComments bool, config CommentLoadConfig) (*FeedDetailResponse, error) {
+	page := f.page.Context(ctx).Timeout(10 * time.Minute)
+	navigateURL := resolveNoteURL(rawURL)
+
+	logrus.Infof("通过 URL 获取笔记详情: %s", navigateURL)
+	logrus.Infof("配置: 点击更多=%v, 回复阈值=%d, 最大评论数=%d, 滚动速度=%s",
+		config.ClickMoreReplies, config.MaxRepliesThreshold, config.MaxCommentItems, config.ScrollSpeed)
+
+	err := retry.Do(
+		func() error {
+			page.MustNavigate(navigateURL)
+			page.MustWaitDOMStable()
+			return nil
+		},
+		retry.Attempts(3),
+		retry.Delay(500*time.Millisecond),
+		retry.MaxJitter(1000*time.Millisecond),
+		retry.OnRetry(func(n uint, err error) {
+			logrus.Debugf("页面导航重试 #%d: %v", n, err)
+		}),
+	)
+	if err != nil {
+		logrus.Errorf("页面导航失败: %v", err)
+		return nil, err
+	}
+	sleepRandom(1000, 1000)
+
+	// 优先从输入 URL 提取 feedID，短链接或无法解析时从浏览器当前 URL 提取
+	feedID := extractFeedIDFromURL(rawURL)
+	if feedID == "" {
+		feedID, err = extractFeedIDFromPage(page)
+		if err != nil {
+			return nil, err
+		}
+	}
+	logrus.Infof("提取到笔记 ID: %s", feedID)
+
+	if err := checkPageAccessible(page); err != nil {
+		return nil, err
+	}
+
+	if loadAllComments {
+		if err := f.loadAllCommentsWithConfig(page, config); err != nil {
+			logrus.Warnf("加载全部评论失败: %v", err)
+		}
+	}
+
+	return f.extractFeedDetail(page, feedID)
+}
+
 // ========== 评论加载器 ==========
 
 type commentLoader struct {
@@ -864,4 +915,48 @@ func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*Fe
 
 func makeFeedDetailURL(feedID, xsecToken string) string {
 	return fmt.Sprintf("https://www.xiaohongshu.com/explore/%s?xsec_token=%s&xsec_source=pc_feed", feedID, xsecToken)
+}
+
+// ========== URL 解析 ==========
+
+// 匹配小红书笔记 ID（24位十六进制字符串）
+var noteIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{24}$`)
+
+// 匹配详情页 URL 中的笔记 ID
+var noteURLPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`/explore/([0-9a-fA-F]{24})`),
+	regexp.MustCompile(`/discovery/item/([0-9a-fA-F]{24})`),
+}
+
+// resolveNoteURL 将用户输入解析为可导航的完整 URL
+func resolveNoteURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if noteIDPattern.MatchString(raw) {
+		return fmt.Sprintf("https://www.xiaohongshu.com/explore/%s", raw)
+	}
+	return raw
+}
+
+// extractFeedIDFromURL 从 URL 或纯笔记 ID 中提取 feedID
+func extractFeedIDFromURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if noteIDPattern.MatchString(raw) {
+		return raw
+	}
+	for _, p := range noteURLPatterns {
+		if m := p.FindStringSubmatch(raw); len(m) > 1 {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// extractFeedIDFromPage 从浏览器当前 URL 提取 feedID（处理重定向场景）
+func extractFeedIDFromPage(page *rod.Page) (string, error) {
+	currentURL := page.MustEval(`() => window.location.href`).String()
+	feedID := extractFeedIDFromURL(currentURL)
+	if feedID == "" {
+		return "", fmt.Errorf("无法从页面 URL 中提取笔记 ID: %s", currentURL)
+	}
+	return feedID, nil
 }
